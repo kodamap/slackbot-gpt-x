@@ -15,8 +15,6 @@ __Chat__
 
 ## Tested Environment
 
-- Windows10
-- Raspberry Pi 4
 - Python 3.7+
 
 # Prerequiste
@@ -47,7 +45,7 @@ https://platform.openai.com/account/api-keys)
 # Packages
 
 ```sh
-cd cd slackbot-gpt-x
+cd slackbot-gpt-x
 pip install -r requirements.txt
 ```
 
@@ -59,7 +57,6 @@ pip install -r requirements.txt
 ```sh
 export SLACK_BOT_TOKEN=xoxb-<your token>
 export SLACK_APP_TOKEN=xapp-1-<your token>
-export SLACK_USER_TOKEN=xoxp-<your token>
 export OPENAI_API_KEY=sk-<your key>
 ```
 
