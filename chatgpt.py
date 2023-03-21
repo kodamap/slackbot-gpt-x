@@ -4,6 +4,11 @@ from logging import getLogger
 import traceback
 import configparser
 
+# database for chat history
+from db.models import Chat, ChatHistory
+from db.settings import session
+from sqlalchemy import distinct
+
 openai.api_key = os.getenv("OPENAI_API_KEY").rstrip()
 logger = getLogger(__name__)
 
@@ -14,75 +19,125 @@ config.read("config.ini")
 content = eval(config.get("CHATGPT", "system"))
 max_tokens = eval(config.get("CHATGPT", "max_tokens"))
 
-
 class ChatGPT:
-    def __init__(self, user, session, chatdb):
-        """If there is no conversation history for the user,
-        add the system role content and store it in the conversation history
-        """
-        if session.query(chatdb).filter_by(user=user).first() is None:
-            # define system content
-            system_role = [{"role": "system", "content": content}]
-            # Insert history
-            chat = chatdb()
-            chat.user = user
-            chat.chat = system_role
-            session.add(instance=chat)
-            session.commit()
-
-    def get(self, user, session, chatdb):
-        """Obtain information from conversation history table"""
-        if session.query(chatdb).filter_by(user=user).first() is None:
-            return None, None
-        else:
-            result = session.query(chatdb).filter_by(user=user).first()
-        return result.user, result.chat
-
-    def reset(self, user, session, chatdb):
-        """Reset conversation history （delete record)"""
-
-        if session.query(chatdb).filter_by(user=user).first() is None:
-            return
-        session.query(chatdb).filter_by(user=user).delete()
+    def __init__(self, user):
+        """If there is no conversation for the user,
+        add the system role content and store it into the chat table
+        """           
+        if not self._get(user):
+            # Insert first record
+            self._save(user, role="system", content=content)
+            
+    def _get(self, user):
+        return session.query(Chat).filter_by(email=user.email).all()
+    
+    def _get_history(self, user, chat_id):
+        return session.query(ChatHistory).filter_by(email=user.email, chat_id=chat_id).all()
+    
+    def _save(self, user, role=None, content=""):
+        """Update record by adding question `user` and answer `assistant"""
+        chat = Chat()
+        chat.user_id = user.user_id
+        chat.email = user.email
+        chat.content = {"role": role, "content": content}
+        session.add(instance=chat)
         session.commit()
-        logger.info(f"Chat history has been reset. user:{user}")
-
-    def send(self, user, prompt, session, chatdb, save=True):
+    
+    def _reset(self, user):
+        """Reset the lastconversation history（delete the chatdb record)"""
+        session.query(Chat).filter_by(email=user.email).delete()
+        session.commit()
+        self.__init__(user)
+        logger.info(f"Chat has been reset. user:{user.email}")
+         
+    def _create_message(self, chat):
+        message = []
+        for c in chat:
+            message.append(c.content)
+        return message
+    
+    def start(self, user):
+        chat = self._get(user)
+        if chat:
+            self._reset(user)
+        self.__init__(user)
+    
+    def resume(self, user, chat_id):
+        """
+        Replace ongoing conversations with historical ones
+        """
+        session.query(Chat).filter_by(email=user.email).delete()
+        session.commit()
+        chat = self._get_history(user, chat_id)
+        if not chat:
+            return
+        for c in chat:
+            self._save(user, role=c.content['role'], content=c.content['content'])
+        return chat
+    
+    def request(self, user):
         """Send an API request
         Questions and answers are appended to the conversation history and stored in the `assistant` role"""
-        _, chat = self.get(user, session, chatdb)
-        chat.append({"role": "user", "content": prompt})
-
-        if save:
-            self.save(user, prompt, session, chatdb, role="user")
-
-        # Api request
+        
+        self._save(user, role="user", content=user.prompt)
+        chat = self._get(user)
+        message = self._create_message(chat)
+        logger.info(f"{user.email} {user.prompt}")
+        
+        # request
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo", max_tokens=max_tokens, messages=chat
+                model="gpt-3.5-turbo", 
+                max_tokens=max_tokens, 
+                messages=message
             )
+            answer = response["choices"][0]["message"]["content"]
         except BaseException as e:
             traceback.print_exc()
             error = f":fried_shrimp: An error has occurred.\n ```{e}```"
             return error
-
-        answer = response["choices"][0]["message"]["content"]
-
-        if save:
-            self.save(user, answer, session, chatdb, role="assistant")
-
-        _, chat = self.get(user, session, chatdb)
-        logger.info(f"{user} {chat}")
-        return answer
-
-    def save(self, user, content, session, chatdb, role):
-        """Update record by adding question `user` and answer `assistant"""
-        _, chat = self.get(user, session, chatdb)
-        if role == "user":
-            chat.append({"role": "user", "content": content})
-        if role == "assistant":
-            chat.append({"role": "assistant", "content": content})
-        if chat:
-            db = session.query(chatdb).filter_by(user=user).first()
-            db.chat = chat
-            session.commit()
+        
+        self._save(user, role="assistant", content=answer)
+        chat_count = session.query(Chat).filter_by(email=user.email).count()
+        logger.info(f"{user.email} {answer}")
+        return answer, chat_count
+        
+    def save_history(self, user):      
+        chat = self._get(user)
+        chat_history_count= session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).count() 
+        # Insert history
+        for c in chat:
+            chat_history = ChatHistory()
+            chat_id = c.user_id + str(chat_history_count+1).zfill(5)
+            chat_history.chat_id = chat_id
+            chat_history.email = c.email
+            chat_history.user_id = c.user_id
+            chat_history.content = c.content
+            chat_history.created_at = c.created_at
+            session.add(instance=chat_history)
+        session.commit()
+        chat_history_count= session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).count() 
+        return chat_history_count
+    
+    def list_history(self, user):
+        
+        chat_ids = session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).all()
+        history = []
+        for chat_id in chat_ids:
+            chat_content = session.query(ChatHistory).filter_by(email=user.email, chat_id=chat_id[0]).all()
+            if len(chat_content) > 1:
+                # return 2 line of user role
+                history.append(chat_content[:2])
+        return history
+        
+    def show_history(self, user, chat_id):
+        if chat_id:
+            return session.query(ChatHistory).filter_by(email=user.email, chat_id=chat_id).all()
+        else:
+            return session.query(Chat).filter_by(email=user.email).all()
+    
+    def delete_history(self, user):
+        """Reset the lastconversation history(delete the chatdb record)"""
+        session.query(ChatHistory).filter_by(email=user.email).delete()
+        session.commit()
+        logger.info(f"Chat history has been reset. user:{user.email}")
