@@ -3,234 +3,102 @@ import os
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 from logging import getLogger, basicConfig, DEBUG, INFO
-import re
-from argparse import ArgumentParser
 
 # chat gpt
+import configparser
 from chatgpt import ChatGPT
 
+# Read configuration
+config = configparser.ConfigParser()
+config.read("config.ini")
+system_content = eval(config.get("CHATGPT", "system"))
+max_tokens = eval(config.get("CHATGPT", "max_tokens"))
+model = eval(config.get("CHATGPT", "model"))
+
+# craete app and logger instance
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 logger = getLogger(__name__)
 
-# Define class to store user info
-
-
+# Prepare an empty class to have properties later.
 class User:
     pass
 
-
-def get_user(message):
+def get_user(message, client):
+    """
+    Set data for this app to User instance.
+    """
     user = User()
-    user.user_id = message["user"]
-    user.email = app.client.users_info(user=message["user"])[
-        "user"]["profile"]["email"]
-    user.prompt = message["text"]
+    user.user_id = message.get("user")
+    user.email = client.users_info(user=message["user"])["user"]["profile"]["email"]
+    user.prompt = message.get("text")
     user.thread_ts = message.get("thread_ts")
-    user.ts = message["ts"]
+    user.ts = message.get("ts")
     return user
 
-
-def align_chat(chat, list_history=False, show_all=False):
+def create_chatgpt_message(response):
     """
-    chat table does not have chat_id column
-    n: limitation of content_size
-    type: Change return format when listing history  
+    Create a message for ChatGPT API from the thread content. 
+    If app_id is present, it is assumed to be a response from ChatGPT, 
+    set "assistant" role. If not, set "user" role.
     """
+    thread_ts = response.data['messages'][0].get('thread_ts')
+    content = {"role": "system", "content": system_content}
+    chatgpt_message = {thread_ts: {'message': [content], 'time_stamp': []}}
 
-    alinged_chat = ""
-    for c in chat:
-        chat_id = c.chat_id
-        created_at = c.created_at.strftime('%Y-%m-%d %H:%M:%S')
+    for res in response.data['messages']:
+        app_id = res.get('app_id')
+        role = "assistant" if app_id else "user"
+        text = res.get('text')
+        time_stamp = res.get('ts')
+        content = {"role": role, "content": text}
+        chatgpt_message[thread_ts]['message'].append(content)
+        chatgpt_message[thread_ts]['time_stamp'].append(time_stamp)
 
-        role, content = c.content["role"], c.content["content"]
-        if role == "system":
-            continue
-        if role == "user":
-            role = ":no_mouth:"
-        elif role == "assistant":
-            role = ":chatgpt:"
-        else:
-            role = ":question:"
+    return chatgpt_message
 
-        if len(content.strip()) > n and not show_all:
-            content = content.strip()[:n] + " ..."
-
-        if list_history:
-            alinged_chat += f"`{chat_id}` `{created_at}` | {role} {content}\n"
-        else:
-            alinged_chat += f"`{created_at}` | {role} {content}\n"
-
-    return alinged_chat
-
-
-@app.message("hello")
-def message_hello(client, message, say):
-    text = f"<@{message['user']}> Hey there!"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"Hey there <@{message['user']}>!")
-
-
-@app.message(re.compile(r"^!start((.|\s)*)$"))
-def start_chat(client, message, say):
-    # prepare instances
-    user = get_user(message)
-    user.prompt = message['text'].split("!start")[1].strip()
-
-    chatgpt = ChatGPT(user)
-    chatgpt.start(user)
-    answer, chat_count = chatgpt.request(user)
-    text = f"<@{message['user']}> :left_speech_bubble: `{chat_count-1}` {answer}"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"{answer}")
-
-    del chatgpt
-
-
-@app.message(re.compile(r"^!resume((.|\s)*)$"))
-def resume_chat(client, message, say):
-    chat_id = ""
-    chat_id = message['text'].split("!resume")[1].strip().replace("`", "")
-    logger.info(f"chat_id:{chat_id}")
-
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-    chat_history = chatgpt.resume(user, chat_id)
-
-    if not chat_history:
-        say(f"<@{message['user']}> Chat history does not exist. Check chat_id:({chat_id}).")
-        del chatgpt
-        return
-
-    text = f"<@{message['user']}> Let's continue the chat. `{chat_id}`"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"<@{message['user']}> Let's continue the chat. `{chat_id}`")
-    del chatgpt
-
-
-@app.message(re.compile(r"^!list((.|\s)*)$"))
-def list_history(client, message, say):
-    # prepare instances
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-    chat_history = chatgpt.list_history(user)
-    alinged_chat_history = ""
-    for chat in chat_history:
-        alinged_chat = align_chat(chat, list_history=True)
-        alinged_chat_history += alinged_chat
-
-    history_count = len(chat_history)
-    text = f"<@{message['user']}> :left_speech_bubble: `History:{history_count} `\n\n{alinged_chat_history}"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"<@{message['user']}> History:{history_count}")
-
-    del chatgpt
-
-
-@app.message(re.compile(r"^!show((.|\s)*)$"))
-def show_history(client, message, say, context, logger):
-    chat_id = ""
-    chat_id = message['text'].split("!show")[1].strip().replace("`", "")
-    logger.info(f"chat_id:{chat_id}")
-
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-
-    if chat_id:
-        # show old chat conversation history
-        header = f"Chat history...\n"
-        chat_history = chatgpt.show_history(user, chat_id)
-    else:
-        # show realtime chat conversation history
-        header = f"Chat in progress...\n"
-        chat_history = chatgpt.show_history(user, chat_id)
-    if not chat_history:
-        text = f"<@{message['user']}> Chat history does not exist. Check chat_id:({chat_id})"
-        client.chat_postMessage(
-            channel=message["channel"], thread_ts=message["ts"], text=text)
-        logger.info(
-            f"<@{user.user_id}> Chat history does not exist. Check chat_id:({chat_id}).")
-        return
-
-    # exclude system role chat
-    alinged_chat = align_chat(chat_history, show_all=True)
-    alinged_chat = header + alinged_chat
-
-    text = f"<@{message['user']}> :left_speech_bubble: `Chat:{len(chat_history)-1} `\n\n{alinged_chat}"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"<@{message['user']}> History:{len(chat_history)-1}")
-    del chatgpt
-
-
-@app.message(re.compile(r"^!save((.|\s)*)$"))
-def save_history(client, message, say):
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-    chat_history_count = chatgpt.save_history(user)
-    list_history(client, message, say)
-    logger.info(f"<@{message['user']}> History:{chat_history_count}")
-    del chatgpt
-
-
-@app.message(re.compile(r"^!delete((.|\s)*)$"))
-def delete_history(client, message, say):
-    chat_id = ""
-    chat_id = message['text'].split("!delete")[1].strip().replace("`", "")
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-
-    result = chatgpt.delete_history(user, chat_id)
-    # When deleted successfully
-    if result:
-        text = f"<@{message['user']}> Chat history have been deleted `{chat_id}`"
-        logger.info(
-            f"<@{message['user']}> Chat history have been deleted: `{chat_id}`")
-    # chat_id does not exist.
-    else:
-        text = f"<@{message['user']}> chat_id:`{chat_id}` does not exist(or not be given). You can check it `!list`"
-        logger.info(
-            f"<@{message['user']}> chat_id:{chat_id} does not exist(or not be given). You can check it")
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    del chatgpt
-
-
-@app.event("message")
+@app.event("message")        
 def handle_message_events(client, message, say):
     """
-    - Create a chatgpt instance for each conversation.
-    - Read chat history from the database.
-    - Delete the chatgpt instance when the conversation is finished.
+    New messages will be threaded.
+    Messages in threads are retrieved with `conversatins_replies`, 
+    and then requesed in the format passed to ChatGPT API.
+    The replies are returned to the same thread.
     """
+
+    # message does not contain 'user' when deleting message
+    if message.get('user') is None:
+        return 
+
     # prepare instances
-    user = get_user(message)
-    chatgpt = ChatGPT(user)
-
+    user = get_user(message, client)
+    chatgpt = ChatGPT(max_tokens, model)
+    
     # send request
-    logger.info(f"<@{message['user']}> request start")
-    answer, chat_count = chatgpt.request(user)
-    text = f"<@{message['user']}> :left_speech_bubble: `{chat_count-1}` {answer}"
-    client.chat_postMessage(
-        channel=message["channel"], thread_ts=message["ts"], text=text)
-    logger.info(f"<@{message['user']}> {answer}")
+    logger.info(f"{user.email} request start")
 
+    # An existing thread has thread_ts key
+    if message.get('thread_ts'):
+        thread_ts = message.get('thread_ts')
+    # New thread 
+    else:
+        thread_ts = message.get('ts')
+
+    response = client.conversations_replies(channel=message["channel"], ts=thread_ts)
+    chatgpt_message = create_chatgpt_message(response)
+
+    # Add created chatgpt message for api request as a User instance's property
+    user.chatgpt_message = chatgpt_message[user.thread_ts]['message']
+    logger.info(f"user_id:{user.user_id} email:{user.email} thread_ts:{user.thread_ts} ts:{user.ts} chat:{user.chatgpt_message}")
+    answer = chatgpt.request(user)
+
+    # Send answer from chatgpt api response
+    ##text = f"<@{message['user']}> {answer}"
+    ##client.chat_postMessage(channel=message["channel"], thread_ts=thread_ts, text=text)
+    client.chat_postMessage(channel=message["channel"], thread_ts=thread_ts, text=answer)
+    logger.info(f"{user.email} {answer}")
+
+    del user
     del chatgpt
-
-
-def build_argparser():
-    parser = ArgumentParser()
-    parser.add_argument(
-        "-lc",
-        "--list_content_size",
-        default=100,
-        help="output size of content in list command",
-        type=int,
-    )
-    return parser
 
 
 if __name__ == "__main__":
@@ -239,10 +107,6 @@ if __name__ == "__main__":
         level=INFO,
         format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(name)s %(funcName)s(): %(message)s",
     )
-
-    # arg parse
-    args = build_argparser().parse_args()
-    n = args.list_content_size
 
     # start slack bolt
     SocketModeHandler(app, os.environ["SLACK_APP_TOKEN"]).start()
