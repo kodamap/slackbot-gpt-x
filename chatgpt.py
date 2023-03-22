@@ -8,6 +8,7 @@ import configparser
 from db.models import Chat, ChatHistory
 from db.settings import session
 from sqlalchemy import distinct
+from datetime import datetime, timezone, timedelta
 
 openai.api_key = os.getenv("OPENAI_API_KEY").rstrip()
 logger = getLogger(__name__)
@@ -57,14 +58,16 @@ class ChatGPT:
         return message
     
     def start(self, user):
+        """Clear the ongoing chats history and start a new chat with ChatGPT"""
         chat = self._get(user)
         if chat:
             self._reset(user)
         self.__init__(user)
     
     def resume(self, user, chat_id):
-        """
-        Replace ongoing conversations with historical ones
+        """Resume a chat with ChatGPT from a saved chat history. 
+        Restore the history ('role, content`) stored in the database to the data for API requests.
+        Replace ongoing chats with them.
         """
         session.query(Chat).filter_by(email=user.email).delete()
         session.commit()
@@ -102,25 +105,30 @@ class ChatGPT:
         logger.info(f"{user.email} {answer}")
         return answer, chat_count
         
-    def save_history(self, user):      
+    def save_history(self, user):
+        """	Save chat history. (It will also be saved in the Slack thread, 
+        but this saved data will be used when resuming the conversation)"""      
         chat = self._get(user)
-        chat_history_count= session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).count() 
+        chat_id = f"{user.user_id}_{user.thread_ts}"
+        # if the same history of chat_id exsits, delete them and insert records
+        if self._get_history(user, chat_id):
+            self.delete_history(user, chat_id)
         # Insert history
         for c in chat:
             chat_history = ChatHistory()
-            chat_id = c.user_id + str(chat_history_count+1).zfill(5)
+            chat_id = f"{c.user_id}_{user.thread_ts}"
             chat_history.chat_id = chat_id
             chat_history.email = c.email
             chat_history.user_id = c.user_id
             chat_history.content = c.content
-            chat_history.created_at = c.created_at
+            chat_history.created_at = datetime.now(timezone(timedelta(hours=+9)))
             session.add(instance=chat_history)
         session.commit()
         chat_history_count= session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).count() 
         return chat_history_count
     
     def list_history(self, user):
-        
+        """Display a list of saved chats. The first question becomes the title."""
         chat_ids = session.query(distinct(ChatHistory.chat_id)).filter_by(email=user.email).all()
         history = []
         for chat_id in chat_ids:
@@ -131,13 +139,17 @@ class ChatGPT:
         return history
         
     def show_history(self, user, chat_id):
+        """Show the contents of a chat by specifying the chat."""
         if chat_id:
             return session.query(ChatHistory).filter_by(email=user.email, chat_id=chat_id).all()
         else:
             return session.query(Chat).filter_by(email=user.email).all()
     
-    def delete_history(self, user):
-        """Reset the lastconversation history(delete the chatdb record)"""
-        session.query(ChatHistory).filter_by(email=user.email).delete()
+    def delete_history(self, user, chat_id):
+        """Delete the chat history(delete the chat record in ChatHistory)"""
+        if not self._get_history(user, chat_id):
+            return False
+        session.query(ChatHistory).filter_by(email=user.email, chat_id=chat_id).delete()
         session.commit()
-        logger.info(f"Chat history has been reset. user:{user.email}")
+        logger.info(f"Chat history has been deleted. user:{user.email} chat_id:{chat_id}")
+        return True

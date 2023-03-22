@@ -12,7 +12,7 @@ Functions are:
 | Display a list of past chats | `!list` | Display a list of saved chats. The first question becomes the title. |
 | show the content of the chat | `!show <chat_id>` | Show the contents of a chat by specifying the chat. | 
 | resume a past chat | `!resume <chat_id>` | Resume a chat with ChatGPT from a saved chat history. Restore the history ('role, content`) stored in the database to the data for API requests. |
-| delete all past history | `!delete` | Delete all past history |
+| delete chat history | `!delete <chat_id>` | Delete your chat history by chat_id |
 
 
 ## Command example 
