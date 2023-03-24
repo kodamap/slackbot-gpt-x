@@ -2,7 +2,7 @@
 import os
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
-from logging import getLogger, basicConfig, DEBUG, INFO
+from logging import getLogger, basicConfig, INFO
 
 # chat gpt
 import configparser
@@ -19,90 +19,70 @@ model = eval(config.get("CHATGPT", "model"))
 app = App(token=os.environ["SLACK_BOT_TOKEN"])
 logger = getLogger(__name__)
 
-# Prepare an empty class to have properties later.
-class User:
-    pass
 
-def get_user(message, client):
+def create_chat_history(response, thread_ts):
     """
-    Set data for this app to User instance.
-    """
-    user = User()
-    user.user_id = message.get("user")
-    user.email = client.users_info(user=message["user"])["user"]["profile"]["email"]
-    user.prompt = message.get("text")
-    user.thread_ts = message.get("thread_ts")
-    user.ts = message.get("ts")
-    return user
-
-def create_chatgpt_message(response):
-    """
-    Create a message for ChatGPT API from the thread content. 
-    If app_id is present, it is assumed to be a response from ChatGPT, 
+    Create a message for ChatGPT API from the thread content.
+    If app_id is present, it is assumed to be a response from ChatGPT,
     set "assistant" role. If not, set "user" role.
     """
-    thread_ts = response.data['messages'][0].get('thread_ts')
     content = {"role": "system", "content": system_content}
-    chatgpt_message = {thread_ts: {'message': [content], 'time_stamp': []}}
+    chat_history = {thread_ts: {"message": [content], "time_stamp": []}}
 
-    for res in response.data['messages']:
-        app_id = res.get('app_id')
+    for res in response.data["messages"]:
+        app_id = res.get("app_id")
         role = "assistant" if app_id else "user"
-        text = res.get('text')
-        time_stamp = res.get('ts')
+        text = res.get("text")
+        time_stamp = res.get("ts")
         content = {"role": role, "content": text}
-        chatgpt_message[thread_ts]['message'].append(content)
-        chatgpt_message[thread_ts]['time_stamp'].append(time_stamp)
+        chat_history[thread_ts]["message"].append(content)
+        chat_history[thread_ts]["time_stamp"].append(time_stamp)
 
-    return chatgpt_message
+    return chat_history
 
-@app.event("message")        
-def handle_message_events(client, message, say):
+
+@app.event("message")
+def handle_message_events(client, message):
     """
     New messages will be threaded.
-    Messages in threads are retrieved with `conversatins_replies`, 
+    Messages in threads are retrieved with `conversatins_replies`,
     and then requesed in the format passed to ChatGPT API.
     The replies are returned to the same thread.
     """
 
     # message does not contain 'user' when deleting message
-    if message.get('user') is None:
-        return 
+    if message.get("user") is None:
+        return
 
-    # prepare instances
-    user = get_user(message, client)
+    # Create ChatGPT instances
     chatgpt = ChatGPT(max_tokens, model)
-    
-    # send request
-    logger.info(f"{user.email} request start")
 
     # An existing thread has thread_ts key
-    if message.get('thread_ts'):
-        thread_ts = message.get('thread_ts')
-    # New thread 
+    if message.get("thread_ts"):
+        thread_ts = message.get("thread_ts")
+    # New thread
     else:
-        thread_ts = message.get('ts')
+        thread_ts = message.get("ts")
 
+    # Get thread messages and create messages for chatgpt request
     response = client.conversations_replies(channel=message["channel"], ts=thread_ts)
-    chatgpt_message = create_chatgpt_message(response)
+    chat_history = create_chat_history(response, thread_ts)
 
     # Add created chatgpt message for api request as a User instance's property
-    user.chatgpt_message = chatgpt_message[user.thread_ts]['message']
-    logger.info(f"user_id:{user.user_id} email:{user.email} thread_ts:{user.thread_ts} ts:{user.ts} chat:{user.chatgpt_message}")
-    answer = chatgpt.request(user)
+    chat_history = chat_history[thread_ts]["message"]
+    logger.info(f"user_id:{message['user']} thread_ts:{thread_ts} chat:{chat_history}")
 
-    # Send answer from chatgpt api response
-    ##text = f"<@{message['user']}> {answer}"
-    ##client.chat_postMessage(channel=message["channel"], thread_ts=thread_ts, text=text)
-    client.chat_postMessage(channel=message["channel"], thread_ts=thread_ts, text=answer)
-    logger.info(f"{user.email} {answer}")
+    # Sent request to chatgpt
+    answer = chatgpt.request(chat_history)
+    logger.info(f"user_id:{message['user']} thread_ts:{thread_ts}  chat:{answer}")
+    client.chat_postMessage(
+        channel=message["channel"], thread_ts=thread_ts, text=answer
+    )
 
-    del user
     del chatgpt
 
 
 if __name__ == "__main__":
-
     basicConfig(
         level=INFO,
         format="%(asctime)s %(levelname)s %(filename)s:%(lineno)d %(name)s %(funcName)s(): %(message)s",
