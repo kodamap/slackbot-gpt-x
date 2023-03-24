@@ -14,7 +14,7 @@ This is a simple slackbot(slack bolt) program using OpenAI ChatGPT API (model: `
 
 https://slack.dev/bolt-python/tutorial/getting-started
 
-Bot and User Tokens Scopdes used by this app
+Bot and User Tokens Scopes
 
 | OAuth Scope | Description    |
 | ----------- | --------------| 
@@ -23,7 +23,15 @@ Bot and User Tokens Scopdes used by this app
 | `groups:history` | View messages and other content in private channels that chatgpt has been added to |
 | `im:history` | View messages and other content in direct messages that chatgpt has been added to |
 | `mpim:history` | View messages and other content in group direct messages that chatgpt has been added to |
-| `users:read.email` | View email addresses of people in a workspace |
+
+Subscribe to bot events
+
+| Event Name	| Description	|
+| --------------| ------------- |
+| `message.channels` | A message was posted to a channel |
+| `message.groups` | A message was posted to a private channel | 
+| `message.im` | A message was posted in a direct message channel | 
+| `message.mpim` | A message was posted in a multiparty direct message channel |
 
 
 ## 2. Create OpenAI API Key
